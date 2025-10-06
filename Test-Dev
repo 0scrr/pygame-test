@@ -5,6 +5,7 @@ Le 29/09/2025
 Ubuntu 22.04.5 - 8G RAM - 4 coeurs
 
 
+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
 
 Prérequis :
 
@@ -436,29 +437,27 @@ Versionnage via Git :
 
 Se rendre sur "github.com" --> Se connecter puis créer un nouveau dépôt ; il faut ensuite y relier son projet
 
-# 1) Configurer ton identité (utilise ton mail GitHub ; pour la confidentialité : 0scrr@users.noreply.github.com)
-git config --global user.name "Oscar Hamman"
-git config --global user.email "0scrr@users.noreply.github.com"
-
-# (Optionnel mais recommandé) définir 'main' comme branche par défaut pour les futurs dépôts
-git config --global init.defaultBranch main
-
+# Assure-toi d'être au bon endroit
 cd /home/oscar/Projets/Perso/dev-jeux/Pygame
 
-# 2) Renommer la branche courante en 'main'
+# 1) Initialiser le dépôt
+git init
+
+# 2) (optionnel) créer un .gitignore minimal
+printf "__pycache__/\n*.py[cod]\n*.log\n.DS_Store\n.venv/\nenv/\n" > .gitignore
+
+# 3) Renommer la branche en 'main'
 git branch -M main
 
-# 3) Ajouter et committer
+# 4) Ajouter et committer
 git add .
 git commit -m "Initial commit: prototype pygame"
 
-# 4) Lier le dépôt distant (si déjà ajouté, tu peux vérifier avec: git remote -v)
-git remote add origin https://github.com/0scrr/pygame-test.git 2>/dev/null || \
-git remote set-url origin https://github.com/0scrr/pygame-test.git
+# 5) Lier le dépôt distant
+git remote add origin https://github.com/0scrr/pygame-test.git
 
-# 5) Pousser
+# 6) Pousser
 git push -u origin main
-
 ----------------------------------------------------------------------------------------------------------------------------
 
 
