@@ -1,0 +1,467 @@
+Test - Dev - Jeu via Pygame
+
+Le 29/09/2025
+
+Ubuntu 22.04.5 - 8G RAM - 4 coeurs
+
+
+
+Prérequis :
+
+sudo apt update
+sudo apt install python3 python3-pip python3-venv git -y
+pip install pygame
+
+sudo snap install --classic code
+
+python3 -m pygame.examples.aliens
+
+
+
+Structure du projet :
+
+
+BASE="/home/oscar/Projets/Perso/dev-jeux/Pygame"
+mkdir -p "$BASE"/{game,data,assets/images,assets/fonts,assets/sfx}
+
+# ---------- settings.py ----------
+cat > "$BASE/settings.py" <<'EOF'
+# Paramètres globaux du jeu
+WIDTH, HEIGHT = 1280, 720
+FPS = 60
+
+# Couleurs de base (RGB)
+COLOR_BG = (25, 90, 55)      # vert foncé "prairie"
+COLOR_UI = (240, 240, 240)
+COLOR_ENEMY = (200, 60, 60)
+COLOR_PLAYER = (60, 180, 60)
+COLOR_KING = (240, 220, 90)
+EOF
+
+# ---------- requirements.txt (optionnel) ----------
+cat > "$BASE/requirements.txt" <<'EOF'
+pygame>=2.5,<3
+EOF
+
+# ---------- game/__init__.py ----------
+cat > "$BASE/game/__init__.py" <<'EOF'
+"""Package de base du jeu Pygame."""
+EOF
+
+# ---------- game/scene.py ----------
+cat > "$BASE/game/scene.py" <<'EOF'
+import pygame
+
+class Scene:
+    """Base de scène : handle_event, update, draw."""
+    def __init__(self, manager):
+        self.mgr = manager
+
+    def on_enter(self): pass
+    def on_leave(self): pass
+    def handle_event(self, event): pass
+    def update(self, dt: float): pass
+    def draw(self, surface: pygame.Surface): pass
+
+
+class SceneManager:
+    """Gestionnaire avec un petit stack (push/pop)."""
+    def __init__(self):
+        self._stack: list[Scene] = []
+        self.quit = False
+
+    def current(self) -> Scene | None:
+        return self._stack[-1] if self._stack else None
+
+    def push(self, scene: Scene):
+        self._stack.append(scene)
+        scene.on_enter()
+
+    def pop(self):
+        if self._stack:
+            top = self._stack.pop()
+            top.on_leave()
+        if not self._stack:
+            self.quit = True
+
+    def replace(self, scene: Scene):
+        self.pop()
+        if not self.quit:
+            self.push(scene)
+
+    def handle_event(self, event):
+        cur = self.current()
+        if cur:
+            cur.handle_event(event)
+
+    def update(self, dt: float):
+        cur = self.current()
+        if cur:
+            cur.update(dt)
+
+    def draw(self, surface: pygame.Surface):
+        cur = self.current()
+        if cur:
+            cur.draw(surface)
+EOF
+
+# ---------- game/entities.py ----------
+cat > "$BASE/game/entities.py" <<'EOF'
+import pygame
+
+class King:
+    def __init__(self, x: float, y: float, speed: float = 200.0):
+        self.pos = pygame.Vector2(x, y)
+        self.speed = speed
+        self.target: pygame.Vector2 | None = None
+
+    def move_to(self, x: float, y: float):
+        self.target = pygame.Vector2(x, y)
+
+    @property
+    def moving(self) -> bool:
+        return self.target is not None
+
+    def update(self, dt: float):
+        if not self.target:
+            return
+        to = self.target - self.pos
+        dist = to.length()
+        step = self.speed * dt
+        if dist <= step:
+            self.pos = self.target
+            self.target = None
+        else:
+            self.pos += to.normalize() * step
+
+    def is_near(self, x: float, y: float, radius: float = 16.0) -> bool:
+        return self.pos.distance_to(pygame.Vector2(x, y)) <= radius
+
+    def draw(self, surf: pygame.Surface, color=(240, 220, 90)):
+        pygame.draw.circle(surf, color, (int(self.pos.x), int(self.pos.y)), 10)
+        # petite "couronne" simplifiée
+        pygame.draw.polygon(
+            surf, color,
+            [(self.pos.x - 8, self.pos.y - 14),
+             (self.pos.x - 2, self.pos.y - 6),
+             (self.pos.x + 2, self.pos.y - 14),
+             (self.pos.x + 8, self.pos.y - 6),
+             (self.pos.x - 8, self.pos.y - 6)]
+        )
+
+
+class Castle:
+    def __init__(self, name: str, x: float, y: float, owner: str = "enemy", radius: int = 18):
+        self.name = name
+        self.pos = pygame.Vector2(x, y)
+        self.owner = owner  # "enemy" ou "player"
+        self.radius = radius
+
+    def is_point_inside(self, x: float, y: float) -> bool:
+        return self.pos.distance_to(pygame.Vector2(x, y)) <= self.radius
+
+    def draw(self, surf: pygame.Surface, enemy_color=(200,60,60), player_color=(60,180,60)):
+        color = enemy_color if self.owner != "player" else player_color
+        pygame.draw.circle(surf, color, (int(self.pos.x), int(self.pos.y)), self.radius)
+        # un petit drapeau
+        pygame.draw.line(surf, (30,30,30), (self.pos.x, self.pos.y - self.radius),
+                         (self.pos.x, self.pos.y - self.radius - 16), 2)
+        pygame.draw.polygon(surf, color,
+                            [(self.pos.x, self.pos.y - self.radius - 16),
+                             (self.pos.x + 12, self.pos.y - self.radius - 12),
+                             (self.pos.x, self.pos.y - self.radius - 8)])
+EOF
+
+# ---------- game/castle_view.py ----------
+cat > "$BASE/game/castle_view.py" <<'EOF'
+import pygame
+from settings import WIDTH, HEIGHT, COLOR_UI, COLOR_PLAYER
+from .scene import Scene
+
+def _font(size: int) -> pygame.font.Font:
+    return pygame.font.Font(None, size)
+
+class CastleView(Scene):
+    """Interface très simple d'un château : capture + retour."""
+    def __init__(self, manager, castle):
+        super().__init__(manager)
+        self.castle = castle
+        self.msg = ""
+
+    def handle_event(self, event):
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self.mgr.pop()  # retour à la carte
+            elif event.key == pygame.K_c:
+                if self.castle.owner != "player":
+                    self.castle.owner = "player"
+                    self.msg = f"Vous avez pris le contrôle de {self.castle.name}."
+                else:
+                    self.msg = f"{self.castle.name} est déjà sous votre contrôle."
+            # Placeholders pour plus tard
+            elif event.key == pygame.K_h:
+                self.msg = "Hôtel de ville (placeholder)"
+            elif event.key == pygame.K_b:
+                self.msg = "Boutique (placeholder)"
+            elif event.key == pygame.K_r:
+                self.msg = "Caserne (placeholder)"
+
+    def update(self, dt: float):
+        pass
+
+    def draw(self, surface: pygame.Surface):
+        surface.fill((40, 40, 55))
+
+        title = _font(40).render(self.castle.name, True, COLOR_UI)
+        surface.blit(title, (WIDTH//2 - title.get_width()//2, 60))
+
+        owner = "Allié" if self.castle.owner == "player" else "Ennemi"
+        owner_col = COLOR_PLAYER if self.castle.owner == "player" else (200,60,60)
+        owner_surf = _font(28).render(f"Contrôle : {owner}", True, owner_col)
+        surface.blit(owner_surf, (WIDTH//2 - owner_surf.get_width()//2, 120))
+
+        lines = [
+            "[C] Capturer le château",
+            "[H] Hôtel de ville   [B] Boutique   [R] Caserne",
+            "[ESC] Retour à la carte"
+        ]
+        y = 200
+        for line in lines:
+            surf = _font(26).render(line, True, COLOR_UI)
+            surface.blit(surf, (WIDTH//2 - surf.get_width()//2, y))
+            y += 36
+
+        if self.msg:
+            msg_surf = _font(24).render(self.msg, True, COLOR_UI)
+            surface.blit(msg_surf, (WIDTH//2 - msg_surf.get_width()//2, HEIGHT - 80))
+EOF
+
+# ---------- game/battle_view.py ----------
+cat > "$BASE/game/battle_view.py" <<'EOF'
+import pygame
+from settings import WIDTH, HEIGHT, COLOR_UI
+from .scene import Scene
+
+def _font(size: int) -> pygame.font.Font:
+    return pygame.font.Font(None, size)
+
+class BattleView(Scene):
+    """Placeholder combat : juste un écran avec issue rapide."""
+    def __init__(self, manager):
+        super().__init__(manager)
+        self.msg = "Combat (prototype) ! [V] Victoire  |  [ESC] Fuir"
+
+    def handle_event(self, event):
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_v or event.key == pygame.K_ESCAPE:
+                # Pour l'instant, quelle que soit l'issue -> retour carte
+                self.mgr.pop()
+
+    def update(self, dt: float):
+        pass
+
+    def draw(self, surface: pygame.Surface):
+        surface.fill((55, 40, 40))
+        title = _font(42).render("Combat !", True, COLOR_UI)
+        surface.blit(title, (WIDTH//2 - title.get_width()//2, 160))
+
+        info = _font(28).render(self.msg, True, COLOR_UI)
+        surface.blit(info, (WIDTH//2 - info.get_width()//2, 250))
+EOF
+
+# ---------- game/world_map.py ----------
+cat > "$BASE/game/world_map.py" <<'EOF'
+import json
+import random
+from pathlib import Path
+import pygame
+
+from .scene import Scene
+from .entities import King, Castle
+from .castle_view import CastleView
+from .battle_view import BattleView
+from settings import WIDTH, HEIGHT, COLOR_BG, COLOR_UI
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT / "data"
+FONT_CACHE = {}
+
+def get_font(size: int) -> pygame.font.Font:
+    key = f"default-{size}"
+    if key not in FONT_CACHE:
+        FONT_CACHE[key] = pygame.font.Font(None, size)
+    return FONT_CACHE[key]
+
+class WorldMap(Scene):
+    """Map interactive : déplacement du roi, clics sur châteaux, événements aléatoires."""
+    def __init__(self, manager):
+        super().__init__(manager)
+        self.king: King | None = None
+        self.castles: list[Castle] = []
+        self.selected: Castle | None = None
+
+        self._event_timer = 0.0
+        self._event_interval = 4.0  # toutes les ~4s on a une chance d'événement
+        self._event_chance = 0.12   # 12% de chance
+
+        self._load_world()
+
+    def _load_world(self):
+        world_path = DATA_DIR / "world_map.json"
+        data = {
+            "king": {"x": 200, "y": 400, "speed": 200},
+            "castles": [
+                {"name": "Château du Nord", "x": 320, "y": 160, "owner": "enemy"},
+                {"name": "Fort de l'Est",   "x": 980, "y": 220, "owner": "enemy"},
+                {"name": "Village du Sud",  "x": 640, "y": 560, "owner": "enemy"}
+            ]
+        }
+        if world_path.exists():
+            data = json.loads(world_path.read_text(encoding="utf-8"))
+
+        k = data["king"]
+        self.king = King(k["x"], k["y"], speed=k.get("speed", 200))
+        self.castles = [Castle(c["name"], c["x"], c["y"], c.get("owner","enemy"))
+                        for c in data["castles"]]
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mx, my = pygame.mouse.get_pos()
+            clicked = None
+            for c in self.castles:
+                if c.is_point_inside(mx, my):
+                    clicked = c
+                    break
+            if clicked:
+                self.selected = clicked
+                self.king.move_to(clicked.pos.x, clicked.pos.y)
+            else:
+                self.selected = None
+                self.king.move_to(mx, my)
+
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self.mgr.quit = True
+
+    def update(self, dt: float):
+        self.king.update(dt)
+
+        # Si un château est sélectionné et que le roi est arrivé → ouvrir l'interface
+        if self.selected and not self.king.moving and self.king.is_near(self.selected.pos.x, self.selected.pos.y, radius=20):
+            self.mgr.push(CastleView(self.mgr, self.selected))
+
+        # Événements aléatoires (ex: combat) pendant le déplacement
+        if self.king.moving:
+            self._event_timer += dt
+            if self._event_timer >= self._event_interval:
+                self._event_timer = 0.0
+                if random.random() < self._event_chance:
+                    self.mgr.push(BattleView(self.mgr))
+
+    def draw(self, surface: pygame.Surface):
+        surface.fill(COLOR_BG)
+
+        # Terrain simplifié (quadrillage léger pour l'ambiance)
+        for x in range(0, surface.get_width(), 64):
+            pygame.draw.line(surface, (20, 70, 45), (x, 0), (x, surface.get_height()))
+        for y in range(0, surface.get_height(), 64):
+            pygame.draw.line(surface, (20, 70, 45), (0, y), (surface.get_width(), y))
+
+        # Châteaux
+        for c in self.castles:
+            c.draw(surface)
+
+        # Roi par-dessus
+        self.king.draw(surface)
+
+        # UI basique
+        f = get_font(22)
+        info = "Clic gauche : se déplacer / entrer dans un château | ESC : quitter"
+        surface.blit(f.render(info, True, COLOR_UI), (16, HEIGHT - 32))
+EOF
+
+# ---------- data/world_map.json ----------
+cat > "$BASE/data/world_map.json" <<'EOF'
+{
+  "king": { "x": 200, "y": 400, "speed": 220 },
+  "castles": [
+    { "name": "Château du Nord", "x": 320, "y": 160, "owner": "enemy" },
+    { "name": "Fort de l'Est",   "x": 980, "y": 220, "owner": "enemy" },
+    { "name": "Village du Sud",  "x": 640, "y": 560, "owner": "enemy" }
+  ]
+}
+EOF
+
+# ---------- main.py ----------
+cat > "$BASE/main.py" <<'EOF'
+import sys
+import pygame
+from settings import WIDTH, HEIGHT, FPS
+from game.scene import SceneManager
+from game.world_map import WorldMap
+
+def main():
+    pygame.init()
+    pygame.display.set_caption("Proto - Feudal Map")
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    clock = pygame.time.Clock()
+
+    mgr = SceneManager()
+    mgr.push(WorldMap(mgr))
+
+    while not mgr.quit:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                mgr.quit = True
+            else:
+                mgr.handle_event(event)
+
+        dt = clock.tick(FPS) / 1000.0
+        mgr.update(dt)
+        mgr.draw(screen)
+
+        pygame.display.flip()
+
+    pygame.quit()
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()
+EOF
+
+
+----------------------------------------------------------------------------------------------------------------------------
+
+Versionnage via Git :
+
+Se rendre sur "github.com" --> Se connecter puis créer un nouveau dépôt ; il faut ensuite y relier son projet
+
+# 1) Configurer ton identité (utilise ton mail GitHub ; pour la confidentialité : 0scrr@users.noreply.github.com)
+git config --global user.name "Oscar Hamman"
+git config --global user.email "0scrr@users.noreply.github.com"
+
+# (Optionnel mais recommandé) définir 'main' comme branche par défaut pour les futurs dépôts
+git config --global init.defaultBranch main
+
+cd /home/oscar/Projets/Perso/dev-jeux/Pygame
+
+# 2) Renommer la branche courante en 'main'
+git branch -M main
+
+# 3) Ajouter et committer
+git add .
+git commit -m "Initial commit: prototype pygame"
+
+# 4) Lier le dépôt distant (si déjà ajouté, tu peux vérifier avec: git remote -v)
+git remote add origin https://github.com/0scrr/pygame-test.git 2>/dev/null || \
+git remote set-url origin https://github.com/0scrr/pygame-test.git
+
+# 5) Pousser
+git push -u origin main
+
+----------------------------------------------------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------------------------------------------------
+
+Lancer le jeu : python3 -m game.main

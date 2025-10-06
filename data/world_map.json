@@ -1,0 +1,8 @@
+{
+  "king": { "x": 200, "y": 400, "speed": 220 },
+  "castles": [
+    { "name": "Château du Nord", "x": 320, "y": 160, "owner": "enemy" },
+    { "name": "Fort de l'Est",   "x": 980, "y": 220, "owner": "enemy" },
+    { "name": "Village du Sud",  "x": 640, "y": 560, "owner": "enemy" }
+  ]
+}
