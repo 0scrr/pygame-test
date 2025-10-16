@@ -1,8 +1,81 @@
 {
-  "king": { "x": 200, "y": 400, "speed": 220 },
+  "king": {
+    "x": 1000,
+    "y": 980,
+    "speed": 220
+  },
   "castles": [
-    { "name": "Château du Nord", "x": 320, "y": 160, "owner": "enemy" },
-    { "name": "Fort de l'Est",   "x": 980, "y": 220, "owner": "enemy" },
-    { "name": "Village du Sud",  "x": 640, "y": 560, "owner": "enemy" }
+    {
+      "name": "Château de Givreombre",
+      "x": 380,
+      "y": 1343,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Combeécume",
+      "x": 944,
+      "y": 1397,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Brumeombre",
+      "x": 1564,
+      "y": 1137,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Montlune",
+      "x": 580,
+      "y": 646,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Rivegarde",
+      "x": 103,
+      "y": 838,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Argentdor",
+      "x": 774,
+      "y": 1299,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Écumefort",
+      "x": 2148,
+      "y": 448,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Montfort",
+      "x": 1572,
+      "y": 668,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Valmarais",
+      "x": 1222,
+      "y": 688,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Argentreval",
+      "x": 1324,
+      "y": 289,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Lierregarde",
+      "x": 818,
+      "y": 182,
+      "owner": "enemy"
+    },
+    {
+      "name": "Château de Lierrevaux",
+      "x": 1691,
+      "y": 386,
+      "owner": "enemy"
+    }
   ]
 }

@@ -17,6 +17,12 @@ DATA_DIR = ROOT / "data"
 FONT_CACHE = {}
 SEED = 1337
 
+# --- paramètres de génération initiale uniquement (premier run) ---
+MAINLAND_CASTLES = 6        # nb de châteaux sur le continent au premier run
+CASTLE_MIN_SPACING = 140    # espacement mini (premier run)
+MIN_PORT_DISTANCE = 120     # éviter de coller aux ports (premier run)
+
+
 def get_font(size: int) -> pygame.font.Font:
     key = f"default-{size}"
     if key not in FONT_CACHE:
@@ -108,6 +114,7 @@ def _island_mask(nx, ny):
     falloff = 1.0 - (r**1.6)
     return max(0.0, min(1.0, falloff))
 
+
 class WorldMap(Scene):
     def __init__(self, manager):
         super().__init__(manager)
@@ -137,13 +144,77 @@ class WorldMap(Scene):
         # Cooldown pour éviter la réouverture immédiate d'un château
         self._castle_cooldown = 0.0
 
+        # Blobs d’îlots (cx, cy, r) pour placer 1 château/îlot au premier run
+        self._islet_blobs: list[tuple[int,int,int]] = []
+
+        # Snapshot pour savoir si l’owner a changé -> autosave propre
+        self._last_saved_owners: dict[str,str] = {}
+
+        # Pool de noms (déterministe), index courant
+        self._name_pool: list[str] = []
+        self._name_idx: int = 0
+
         self._load_world()
+
+    # =============== NOMS DE CHÂTEAUX (déterministe, style homogène) ===============
+    def _build_name_pool(self):
+        """
+        Construit un pool de toponymes français crédibles, mélange déterministe basé sur SEED.
+        Les noms utilisés sont de la forme : "Château de <Toponyme>".
+        """
+        curated = [
+            "Montreval","Rochebrune","Valombre","Auberive","Boisclair","Clairmont","Noirval",
+            "Brumeval","Hautefort","Loupargent","Corbelune","Lormont","Chênedor","Valfroid",
+            "Rivemont","Saulesombre","Tournepierre","Fauconval","Givrane","Bruineclair",
+            "Rochegarde","Beaulac","Aigrefont","Merlevaux","Argentière","Orvalon","Ventebrune",
+            "Pierreval","Lioncourt","Aiglemont","Lierrefort","Bourgneuf","Combelune","Sombrefont",
+            "Écumeval","Sablesmont","Plaineloup","Maréclaire","Moulinsarde","Rivedor","Rocfroid"
+        ]
+        prefixes = ["Mont","Roche","Val","Bois","Aube","Brume","Noir","Clair","Loup","Corbe","Givre","Faucon","Or","Argent","Rive","Beau","Pierre","Aigle","Lierre","Bourg","Combe","Sable","Écume","Mer","Plain","Moulin","Chêne"]
+        suffixes = ["reval","brune","ombre","rive","clair","mont","val","lune","fort","garde","froid","court","lac","vaux","dor","neuf","font","brun","noir","saules","plaine","écume","sables","roc","marais","combe"]
+
+        gen = set(curated)
+        # combinaisons supplémentaires
+        for p in prefixes:
+            for s in suffixes:
+                name = (p + s).replace("..",".")
+                if 6 <= len(name) <= 14:
+                    gen.add(name)
+
+        pool = list(gen)
+        rng = random.Random(SEED + 91001)
+        rng.shuffle(pool)
+        # Capitaliser correctement (déjà quasi OK), retirer doublons éventuels par lower()
+        seen = set()
+        final = []
+        for n in pool:
+            key = n.lower()
+            if key not in seen:
+                seen.add(key)
+                # normaliser les accents de début si besoin (facultatif ici)
+                final.append(n)
+            if len(final) >= 200:
+                break
+        return final
+
+    def _next_castle_name(self) -> str:
+        if not self._name_pool:
+            self._name_pool = self._build_name_pool()
+            self._name_idx = 0
+        name = self._name_pool[self._name_idx % len(self._name_pool)]
+        self._name_idx += 1
+        return f"Château de {name}"
+
+    # ==============================================================================
 
     # --- appelé quand une scène enfant (CastleView) se ferme ---
     def on_child_popped(self, child):
         if isinstance(child, CastleView):
             self.selected = None
             self._castle_cooldown = 0.45  # ~1/2 seconde pour éviter re-pop immédiat
+            # si des owners ont changé, on sauve l’état (JSON comme sauvegarde)
+            if self._owners_changed_since_last_save():
+                self._save_layout()
 
     # ---------- terrain helpers ----------
     def _height(self, x, y):
@@ -165,7 +236,16 @@ class WorldMap(Scene):
     def on_enter(self):
         self._render_background()
         self._generate_islets_and_ports()
-        self._reposition_water_castles()
+
+        # Si aucun château n’a été chargé du JSON (premier run) -> génération initiale UNIQUEMENT
+        if len(self.castles) == 0:
+            self._generate_initial_castles()
+            self._reposition_water_castles()
+            self._save_layout()  # fige la seed en positions & noms initiaux
+        else:
+            # positions respectées telles que dans le JSON, recentrer seulement si eau
+            self._reposition_water_castles()
+
         # Assurer un spawn du roi sur la terre
         if self.is_water(self.king.pos.x, self.king.pos.y):
             nx, ny = self._nearest_land(self.king.pos.x, self.king.pos.y, max_r=600)
@@ -176,11 +256,7 @@ class WorldMap(Scene):
         world_path = DATA_DIR / "world_map.json"
         data = {
             "king": {"x": WORLD_W//2 - 200, "y": WORLD_H//2 + 80, "speed": 220},
-            "castles": [
-                {"name": "Château du Nord", "x": WORLD_W//2 - 320, "y": WORLD_H//2 - 260, "owner": "enemy"},
-                {"name": "Fort de l'Est",   "x": WORLD_W//2 + 420, "y": WORLD_H//2 - 120, "owner": "enemy"},
-                {"name": "Village du Sud",  "x": WORLD_W//2 +  40, "y": WORLD_H//2 + 340, "owner": "enemy"}
-            ]
+            "castles": []  # <— si fichier absent, on part sur zéro château -> premier run générera
         }
         if world_path.exists():
             data = json.loads(world_path.read_text(encoding="utf-8"))
@@ -188,7 +264,10 @@ class WorldMap(Scene):
         k = data["king"]
         self.king = King(k["x"], k["y"], speed=k.get("speed", 200))
         self.castles = [Castle(c["name"], c["x"], c["y"], c.get("owner","enemy"))
-                        for c in data["castles"]]
+                        for c in data.get("castles", [])]
+
+        # snapshot des owners pour detecter un changement plus tard
+        self._last_saved_owners = {c.name: c.owner for c in self.castles}
 
     def _render_background(self):
         scale = 4
@@ -265,6 +344,9 @@ class WorldMap(Scene):
                 continue
             blobs.append((x, y, r))
 
+        # mémoriser pour 1 château/îlot (premier run uniquement)
+        self._islet_blobs = blobs[:]
+
         # dessiner + override en terre
         for (cx, cy, r) in blobs:
             poly = self._make_blob_islet(cx, cy, r, spikes=random.randint(12,18))
@@ -313,6 +395,36 @@ class WorldMap(Scene):
                 px = int(cx + r*0.8); py = int(cy)
                 self.ports.append(Port(f"Îlot-Port-{i}", px, py))
 
+    # ---------- génération INITIALE UNIQUEMENT ----------
+    def _generate_initial_castles(self):
+        rng = random.Random(SEED + 500)
+
+        # Préparer le pool de noms
+        self._name_pool = self._build_name_pool()
+        self._name_idx = 0
+
+        # A) Continent : MAINLAND_CASTLES points sur la terre, espacés, loin des ports
+        created: list[Castle] = []
+        tries = 0
+        while len(created) < MAINLAND_CASTLES and tries < MAINLAND_CASTLES * 2000:
+            tries += 1
+            x = rng.randint(80, WORLD_W - 80)
+            y = rng.randint(80, WORLD_H - 80)
+            if not self.is_land(x, y):
+                continue
+            if any(pygame.Vector2(x - p.pos.x, y - p.pos.y).length() < MIN_PORT_DISTANCE for p in self.ports):
+                continue
+            if any(pygame.Vector2(x - c.pos.x, y - c.pos.y).length() < CASTLE_MIN_SPACING for c in created):
+                continue
+            created.append(Castle(self._next_castle_name(), x, y, owner="enemy"))
+
+        # B) 1 château par îlot (centre des blobs)
+        for _i, (cx, cy, _r) in enumerate(self._islet_blobs, start=1):
+            created.append(Castle(self._next_castle_name(), cx, cy, owner="enemy"))
+
+        # Fusionner (ici on part de zéro)
+        self.castles.extend(created)
+
     def _nearest_land(self, x, y, max_r=600):
         p = pygame.Vector2(x, y)
         for r in range(2, max_r, 2):
@@ -324,6 +436,7 @@ class WorldMap(Scene):
         return int(x), int(y)
 
     def _reposition_water_castles(self):
+        # sécurité: si un château est en mer (modif externe), on le recolle à la terre la plus proche
         for c in self.castles:
             if self.is_water(c.pos.x, c.pos.y):
                 nx, ny = self._nearest_land(c.pos.x, c.pos.y, max_r=800)
@@ -332,6 +445,23 @@ class WorldMap(Scene):
                     near = min(self.ports, key=lambda p: pygame.Vector2(p.pos - c.pos).length())
                     nx, ny = int(near.pos.x + 24), int(near.pos.y + 24)
                 c.pos.update(nx, ny)
+
+    # ---- Persistance / Sauvegarde d’état (JSON comme "save") ----
+    def _owners_changed_since_last_save(self) -> bool:
+        cur = {c.name: c.owner for c in self.castles}
+        return cur != self._last_saved_owners
+
+    def _save_layout(self):
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        world_path = DATA_DIR / "world_map.json"
+        data = {
+            "king": {"x": int(self.king.pos.x), "y": int(self.king.pos.y), "speed": self.king.speed},
+            "castles": [{"name": c.name, "x": int(c.pos.x), "y": int(c.pos.y), "owner": c.owner}
+                        for c in self.castles]
+        }
+        world_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # refresh snapshot owners
+        self._last_saved_owners = {c.name: c.owner for c in self.castles}
 
     # ------------- helpers caméra -------------
     def _screen_to_world(self, sx, sy):
