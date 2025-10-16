@@ -22,13 +22,15 @@ class CastleView(Scene):
                     self.msg = f"Vous avez pris le contrôle de {self.castle.name}."
                 else:
                     self.msg = f"{self.castle.name} est déjà sous votre contrôle."
-            # Placeholders pour plus tard
             elif event.key == pygame.K_h:
                 self.msg = "Hôtel de ville (placeholder)"
             elif event.key == pygame.K_b:
                 self.msg = "Boutique (placeholder)"
             elif event.key == pygame.K_r:
                 self.msg = "Caserne (placeholder)"
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+            # clic droit = retour (fallback si ESC capricieux)
+            self.mgr.pop()
 
     def update(self, dt: float):
         pass
@@ -47,7 +49,7 @@ class CastleView(Scene):
         lines = [
             "[C] Capturer le château",
             "[H] Hôtel de ville   [B] Boutique   [R] Caserne",
-            "[ESC] Retour à la carte"
+            "[ESC] Retour à la carte  |  Clic droit: retour"
         ]
         y = 200
         for line in lines:
