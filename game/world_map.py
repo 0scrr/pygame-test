@@ -82,19 +82,30 @@ def _draw_dotted_line(surf, a, b, dash=12, gap=8, color=(245,245,245)):
         pygame.draw.line(surf, color, (int(pos.x), int(pos.y)), (int(end.x), int(end.y)), 2)
         pos = end + dir * gap
 
-# ------------- masque "îlots" : forcer de la terre dans l'eau -------------
+# ------------- overrides terre via mask (îlots organiques) -------------
 class LandOverrides:
-    def __init__(self):
-        self.circles: list[tuple[float,float,float]] = []  # (x,y,r)
-
-    def add_islet(self, x, y, r):
-        self.circles.append((x,y,r))
-
+    def __init__(self, w, h):
+        self.surface = pygame.Surface((w, h), pygame.SRCALPHA)  # alpha>0 => terre forcée
+        self.mask: pygame.Mask | None = None
+    def _commit(self):
+        self.mask = pygame.mask.from_surface(self.surface)
+    def add_polygon(self, pts):
+        pygame.draw.polygon(self.surface, (255,255,255,255), [(int(px),int(py)) for px,py in pts])
+        self._commit()
     def is_land_here(self, x, y):
-        for cx, cy, r in self.circles:
-            if pygame.Vector2(x - cx, y - cy).length() <= r:
-                return True
+        if self.mask is None: return False
+        xi, yi = int(x), int(y)
+        if 0 <= xi < self.mask.get_size()[0] and 0 <= yi < self.mask.get_size()[1]:
+            return self.mask.get_at((xi, yi)) == 1
         return False
+
+def _island_mask(nx, ny):
+    # masque radial: centre surélevé, bords abaissés -> île au centre, mer autour
+    dx = nx - 0.5
+    dy = ny - 0.5
+    r = math.hypot(dx, dy) / 0.7071
+    falloff = 1.0 - (r**1.6)
+    return max(0.0, min(1.0, falloff))
 
 class WorldMap(Scene):
     def __init__(self, manager):
@@ -113,10 +124,13 @@ class WorldMap(Scene):
         self._bg: pygame.Surface | None = None
         self._vignette: pygame.Surface | None = None
 
-        self.cam = pygame.Vector2(0, 0)  # caméra
+        self.cam = pygame.Vector2(0, 0)
         self._last_target: pygame.Vector2 | None = None
 
-        self.land_over = LandOverrides()
+        self.land_over = LandOverrides(WORLD_W, WORLD_H)
+
+        self._mode_flash_timer = 0.0
+        self._mode_flash_kind = None  # "boat"|"land"|None
 
         self._load_world()
 
@@ -124,6 +138,7 @@ class WorldMap(Scene):
     def _height(self, x, y):
         nx, ny = x / WORLD_W, y / WORLD_H
         v = _fbm(nx, ny, SEED)
+        v *= 0.75 + 0.25 * _island_mask(nx, ny)  # île centrale, mer autour
         light = 0.08 * (1 - (nx + (1 - ny)) / 2)
         return max(0.0, min(1.0, v + light))
 
@@ -131,7 +146,7 @@ class WorldMap(Scene):
         if self.land_over.is_land_here(x, y):
             return False
         v = self._height(x, y)
-        return v < 0.40  # eau (deep+shallow)
+        return v < 0.40
 
     def is_land(self, x, y):
         return not self.is_water(x, y)
@@ -139,26 +154,25 @@ class WorldMap(Scene):
     def on_enter(self):
         self._render_background()
         self._generate_islets_and_ports()
-        self._reposition_water_castles()
-        # Assurer un spawn du roi sur la terre
+        self._reposition_water_castles()  # après overrides garantis
+        # Spawn roi sur terre
         if self.is_water(self.king.pos.x, self.king.pos.y):
-            nx, ny = self._nearest_land(self.king.pos.x, self.king.pos.y, max_r=300)
+            nx, ny = self._nearest_land(self.king.pos.x, self.king.pos.y, max_r=600)
             self.king.pos.update(nx, ny)
             self.king.mode = "land"
 
     def _load_world(self):
         world_path = DATA_DIR / "world_map.json"
         data = {
-            "king": {"x": 200, "y": 400, "speed": 200},
+            "king": {"x": WORLD_W//2 - 200, "y": WORLD_H//2 + 80, "speed": 220},
             "castles": [
-                {"name": "Château du Nord", "x": 320, "y": 160, "owner": "enemy"},
-                {"name": "Fort de l'Est",   "x": 980, "y": 220, "owner": "enemy"},
-                {"name": "Village du Sud",  "x": 640, "y": 560, "owner": "enemy"}
+                {"name": "Château du Nord", "x": WORLD_W//2 - 320, "y": WORLD_H//2 - 260, "owner": "enemy"},
+                {"name": "Fort de l'Est",   "x": WORLD_W//2 + 420, "y": WORLD_H//2 - 120, "owner": "enemy"},
+                {"name": "Village du Sud",  "x": WORLD_W//2 +  40, "y": WORLD_H//2 + 340, "owner": "enemy"}
             ]
         }
         if world_path.exists():
             data = json.loads(world_path.read_text(encoding="utf-8"))
-
         k = data["king"]
         self.king = King(k["x"], k["y"], speed=k.get("speed", 200))
         self.castles = [Castle(c["name"], c["x"], c["y"], c.get("owner","enemy"))
@@ -173,11 +187,11 @@ class WorldMap(Scene):
             for x in range(low_w):
                 nx = x / low_w
                 v = _fbm(nx, ny, SEED)
+                v *= 0.75 + 0.25 * _island_mask(nx, ny)
                 light = 0.08 * (1 - (nx + (1 - ny)) / 2)
                 v = max(0.0, min(1.0, v + light))
                 low.set_at((x, y), _classify(v))
         bg = pygame.transform.smoothscale(low, (WORLD_W, WORLD_H))
-        # bordure douce
         overlay = pygame.Surface((WORLD_W, WORLD_H), pygame.SRCALPHA)
         for c in range(6):
             alpha = 18 - c*3
@@ -186,43 +200,112 @@ class WorldMap(Scene):
         self._bg = bg
         self._vignette = _make_vignette((WIDTH, HEIGHT))
 
+    # ---------- îlots organiques “décollés” ----------
+    def _make_blob_islet(self, cx, cy, r_base, spikes=14):
+        pts = []
+        for i in range(spikes):
+            ang = (i / spikes) * math.tau
+            jitter = random.uniform(-0.35, 0.35)
+            rad = r_base * (0.8 + 0.5 * math.sin(ang*2 + random.random()*0.6) + jitter)
+            pts.append((cx + math.cos(ang)*rad, cy + math.sin(ang)*rad))
+        smooth = []
+        for i in range(len(pts)):
+            a = pygame.Vector2(pts[i-1]); b = pygame.Vector2(pts[i]); c = pygame.Vector2(pts[(i+1)%len(pts)])
+            m = (a + b*2 + c) / 4
+            smooth.append((m.x, m.y))
+        return smooth
+
+    def _ring_is_mostly_water(self, cx, cy, r, gap=36, step_deg=10, ratio=0.85):
+        water = 0; total = 0
+        rr = r + gap
+        for ang in range(0, 360, step_deg):
+            px = int(cx + math.cos(math.radians(ang)) * rr)
+            py = int(cy + math.sin(math.radians(ang)) * rr)
+            if 0 <= px < WORLD_W and 0 <= py < WORLD_H:
+                total += 1
+                if self.is_water(px, py):
+                    water += 1
+        return total > 0 and (water / total) >= ratio
+
     def _generate_islets_and_ports(self):
         random.seed(SEED + 2025)
-        # 1) îlots (cercles de terre forcée)
-        for _ in range(6):
-            x = random.randint(WORLD_W//4, WORLD_W - WORLD_W//4)
-            y = random.randint(WORLD_H//4, WORLD_H - WORLD_H//4)
+        self.ports = []
+
+        margin = 180
+        wanted_islets = 6
+        min_islet_spacing = 150
+        blobs = []
+        attempts = 0
+
+        while len(blobs) < wanted_islets and attempts < 800:
+            attempts += 1
+            x = random.randint(margin, WORLD_W - margin)
+            y = random.randint(margin, WORLD_H - margin)
             if not self.is_water(x, y):
                 continue
-            r = random.randint(40, 110)
-            self.land_over.add_islet(x, y, r)
-            pygame.draw.circle(self._bg, COLOR_GRASS, (x, y), r)
-            pygame.draw.circle(self._bg, COLOR_SAND, (x, y), max(1, r-6), 2)
+            r = random.randint(70, 120)
 
-        # 2) ports : points de côte (terre à côté de l'eau)
-        self.ports = []
+            # éloignement des autres îlots
+            if any(pygame.Vector2(x-bx, y-by).length() < (br + min_islet_spacing) for bx,by,br in blobs):
+                continue
+            # anneau d'eau autour pour éviter qu'il colle au continent
+            if not self._ring_is_mostly_water(x, y, r, gap=40, step_deg=8, ratio=0.9):
+                continue
+
+            blobs.append((x, y, r))
+
+        # dessiner îlots + marquer en terre forcée
+        for (cx, cy, r) in blobs:
+            poly = self._make_blob_islet(cx, cy, r, spikes=random.randint(12,18))
+            pygame.draw.polygon(self._bg, COLOR_SAND, [(int(px),int(py)) for px,py in poly])
+            inner = [(cx + (px-cx)*0.82, cy + (py-cy)*0.82) for (px,py) in poly]
+            pygame.draw.polygon(self._bg, COLOR_GRASS, [(int(px),int(py)) for px,py in inner])
+            pygame.draw.polygon(self._bg, (235,235,235), [(int(px),int(py)) for px,py in poly], 1)
+            self.land_over.add_polygon(poly)
+
+        # -------- Ports --------
         def _find_coast():
-            for _ in range(2000):
+            for _ in range(3500):
                 x = random.randint(24, WORLD_W-24)
                 y = random.randint(24, WORLD_H-24)
-                if self.is_land(x, y):
-                    for dx, dy in ((16,0),(-16,0),(0,16),(0,-16)):
-                        if self.is_water(x+dx, y+dy):
-                            return x, y
+                if self.is_land(x, y) and any(self.is_water(x+dx, y+dy) for dx,dy in ((18,0),(-18,0),(0,18),(0,-18))):
+                    return x, y
             return None
 
-        # ports continent
-        for i in range(5):
+        # Ports continent (max 3), espacés
+        mainland_ports_target = 3
+        min_port_spacing = 160
+        tries = 0
+        while len([p for p in self.ports if not p.name.startswith("Îlot-")]) < mainland_ports_target and tries < 800:
+            tries += 1
             p = _find_coast()
-            if p: self.ports.append(Port(f"Port-{i+1}", *p))
-        # ports îlots (côté est approximatif)
-        for i, (cx,cy,r) in enumerate(self.land_over.circles):
-            self.ports.append(Port(f"Îlot-Port-{i+1}", int(cx+r*0.7), int(cy)))
+            if not p: break
+            if p[0] < margin or p[0] > WORLD_W-margin or p[1] < margin or p[1] > WORLD_H-margin:
+                continue
+            if any(pygame.Vector2(p[0]-pp.pos.x, p[1]-pp.pos.y).length() < min_port_spacing for pp in self.ports):
+                continue
+            self.ports.append(Port(f"Port-{len(self.ports)+1}", *p))
 
-    def _nearest_land(self, x, y, max_r=80):
+        # 1 port par îlot, placé sur la côte de l’îlot
+        for i, (cx,cy,r) in enumerate(blobs, start=1):
+            placed = False
+            for ang in range(0, 360, 10):
+                px = int(cx + math.cos(math.radians(ang)) * int(r*0.9))
+                py = int(cy + math.sin(math.radians(ang)) * int(r*0.9))
+                if self.is_land(px, py) and any(self.is_water(px+dx, py+dy) for dx,dy in ((16,0),(-16,0),(0,16),(0,-16))):
+                    if all(pygame.Vector2(px-pp.pos.x, py-pp.pos.y).length() >= 140 for pp in self.ports):
+                        self.ports.append(Port(f"Îlot-Port-{i}", px, py))
+                        placed = True
+                        break
+            if not placed:
+                # secours: un point à l'est de l’îlot (mais on garde UN seul port)
+                px = int(cx + r*0.8); py = int(cy)
+                self.ports.append(Port(f"Îlot-Port-{i}", px, py))
+
+    def _nearest_land(self, x, y, max_r=600):
         p = pygame.Vector2(x, y)
         for r in range(2, max_r, 2):
-            for a in range(0, 360, 15):
+            for a in range(0, 360, 8):
                 off = pygame.Vector2(1,0).rotate(a) * r
                 test = p + off
                 if 0 <= test.x < WORLD_W and 0 <= test.y < WORLD_H and self.is_land(test.x, test.y):
@@ -232,7 +315,12 @@ class WorldMap(Scene):
     def _reposition_water_castles(self):
         for c in self.castles:
             if self.is_water(c.pos.x, c.pos.y):
-                nx, ny = self._nearest_land(c.pos.x, c.pos.y, max_r=160)
+                nx, ny = self._nearest_land(c.pos.x, c.pos.y, max_r=800)
+                if self.is_water(nx, ny):
+                    # secours: colle le château au port le plus proche
+                    if self.ports:
+                        near = min(self.ports, key=lambda p: pygame.Vector2(p.pos - c.pos).length())
+                        nx, ny = int(near.pos.x + 24), int(near.pos.y + 24)
                 c.pos.update(nx, ny)
 
     # ------------- helpers -------------
@@ -294,7 +382,6 @@ class WorldMap(Scene):
                     self.selected = None
                     self.king.move_to(wx, wy)
                     self._last_target = pygame.Vector2(wx, wy)
-                # sinon: clic ignoré
 
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             self.mgr.quit = True
@@ -303,13 +390,11 @@ class WorldMap(Scene):
         prev = self.king.pos.copy()
         self.king.update(dt)
 
-        # bloquer si terrain interdit
+        # blocage terrain interdit
         if self.king.mode == "land" and self.is_water(self.king.pos.x, self.king.pos.y):
-            self.king.pos.update(prev)
-            self.king.target = None
+            self.king.pos.update(prev); self.king.target = None
         elif self.king.mode == "boat" and self.is_land(self.king.pos.x, self.king.pos.y):
-            self.king.pos.update(prev)
-            self.king.target = None
+            self.king.pos.update(prev); self.king.target = None
 
         self._center_camera_on_king()
 
@@ -321,7 +406,15 @@ class WorldMap(Scene):
             for p in self.ports:
                 if self.king.is_near(p.pos.x, p.pos.y, radius=20):
                     self.king.mode = "boat" if self.king.mode == "land" else "land"
+                    self._mode_flash_kind = self.king.mode
+                    self._mode_flash_timer = 1.2
                     break
+
+        # timer du flash d’icône
+        if self._mode_flash_timer > 0:
+            self._mode_flash_timer -= dt
+            if self._mode_flash_timer <= 0:
+                self._mode_flash_kind = None
 
         # événements seulement en mode "land"
         if self.king.moving and self.king.mode == "land":
@@ -364,10 +457,24 @@ class WorldMap(Scene):
 
         self.king.draw(surface, offset=self.cam)
 
+        # flash “mode” au-dessus du roi
+        if self._mode_flash_kind:
+            sp = self.king.pos - self.cam
+            y = sp.y - 32
+            if self._mode_flash_kind == "boat":
+                pygame.draw.polygon(surface, (30,30,30), [(sp.x-12,y+2),(sp.x+12,y+2),(sp.x+8,y+12),(sp.x-8,y+12)])
+                pygame.draw.line(surface, (30,30,30), (sp.x, y-14), (sp.x, y+2), 2)
+                pygame.draw.polygon(surface, (240,240,240), [(sp.x,y-14),(sp.x+12,y-4),(sp.x,y-4)])
+            else:
+                pygame.draw.rect(surface, (30,30,30), (sp.x-12, y, 10, 7))
+                pygame.draw.rect(surface, (30,30,30), (sp.x+2,  y, 10, 7))
+                pygame.draw.rect(surface, (240,240,240), (sp.x-12, y-3, 10, 3), 1)
+                pygame.draw.rect(surface, (240,240,240), (sp.x+2,  y-3, 10, 3), 1)
+
         if self._vignette:
             surface.blit(self._vignette, (0,0))
 
-        # Aide claire
+        # Aide
         f = get_font(20)
-        help_text = f"[Mode: {'Bateau' if self.king.mode=='boat' else 'Terre'}]  Clic gauche: se déplacer  |  Clic sur un PORT: embarquer/débarquer  |  ESC: quitter"
+        help_text = f"[Mode: {'Bateau' if self.king.mode=='boat' else 'Terre'}]  Clic: se déplacer  |  Clic PORT: embarquer/débarquer  |  En bateau: clic sur l'eau pour naviguer  |  ESC: quitter"
         surface.blit(f.render(help_text, True, COLOR_UI), (16, HEIGHT - 28))

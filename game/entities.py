@@ -7,6 +7,23 @@ def _draw_outline_circle(surf, pos, radius, fill, outline=(25,25,25), w=2, shado
     pygame.draw.circle(surf, outline, (int(pos.x), int(pos.y)), radius)
     pygame.draw.circle(surf, fill, (int(pos.x), int(pos.y)), max(0, radius - w))
 
+def _draw_boat_icon(surf, center):
+    x, y = int(center.x), int(center.y)
+    # coque
+    pygame.draw.polygon(surf, (35,35,35), [(x-10,y+6),(x+10,y+6),(x+6,y+12),(x-6,y+12)])
+    # mât + voile
+    pygame.draw.line(surf, (30,30,30), (x, y-10), (x, y+6), 2)
+    pygame.draw.polygon(surf, (230,230,230), [(x,y-10),(x+10,y-2),(x,y-2)])
+    # vague
+    pygame.draw.arc(surf, (220,220,220), pygame.Rect(x-12, y+10, 24, 10), 3.6, 5.8, 2)
+
+def _draw_boots_icon(surf, center):
+    x, y = int(center.x), int(center.y)
+    pygame.draw.rect(surf, (35,35,35), (x-10, y+4, 8, 6))
+    pygame.draw.rect(surf, (35,35,35), (x+2,  y+4, 8, 6))
+    pygame.draw.rect(surf, (230,230,230), (x-10, y+1, 8, 4), 1)
+    pygame.draw.rect(surf, (230,230,230), (x+2,  y+1, 8, 4), 1)
+
 class King:
     def __init__(self, x: float, y: float, speed: float = 200.0):
         self.pos = pygame.Vector2(x, y)  # monde
@@ -43,13 +60,9 @@ class King:
         _draw_outline_circle(surf, screen_pos, 12 + pulse, color)
 
         if self.mode == "boat":
-            # petit gouvernail stylisé
-            pygame.draw.circle(surf, (30,30,30), (int(screen_pos.x), int(screen_pos.y)), 6, 2)
-            pygame.draw.line(surf, (30,30,30),
-                             (screen_pos.x, screen_pos.y-9), (screen_pos.x, screen_pos.y+9), 2)
-            pygame.draw.line(surf, (30,30,30),
-                             (screen_pos.x-9, screen_pos.y), (screen_pos.x+9, screen_pos.y), 2)
+            _draw_boat_icon(surf, screen_pos)
         else:
+            # petite couronne stylisée
             crown_pts = [
                 (screen_pos.x - 8, screen_pos.y - 12),
                 (screen_pos.x - 3, screen_pos.y - 4),

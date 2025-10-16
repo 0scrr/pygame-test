@@ -463,4 +463,6 @@ git push -u origin main
 
 ----------------------------------------------------------------------------------------------------------------------------
 
-Lancer le jeu : python3 -m game.main
+Lancer le jeu : python3 main.py
+
+
