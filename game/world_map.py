@@ -23,7 +23,7 @@ def get_font(size: int) -> pygame.font.Font:
         FONT_CACHE[key] = pygame.font.Font(None, size)
     return FONT_CACHE[key]
 
-# ----- bruit simple (value noise + fbm) -----
+# ----- bruit (value noise + fbm) -----
 def _hash2(ix, iy, seed):
     n = (ix * 374761393) ^ (iy * 668265263) ^ (seed * 1442695041)
     n = (n ^ (n >> 13)) * 1274126177
@@ -31,6 +31,7 @@ def _hash2(ix, iy, seed):
     return (n & 0xFFFFFFFF) / 0xFFFFFFFF
 
 def _smoothstep(t): return t * t * (3 - 2 * t)
+
 def _value_noise(x, y, freq, seed):
     x *= freq; y *= freq
     ix, iy = int(x), int(y)
@@ -82,7 +83,7 @@ def _draw_dotted_line(surf, a, b, dash=12, gap=8, color=(245,245,245)):
         pygame.draw.line(surf, color, (int(pos.x), int(pos.y)), (int(end.x), int(end.y)), 2)
         pos = end + dir * gap
 
-# ------------- overrides terre via mask (îlots organiques) -------------
+# ----- overrides de terre via mask (îlots organiques) -----
 class LandOverrides:
     def __init__(self, w, h):
         self.surface = pygame.Surface((w, h), pygame.SRCALPHA)  # alpha>0 => terre forcée
@@ -100,7 +101,7 @@ class LandOverrides:
         return False
 
 def _island_mask(nx, ny):
-    # masque radial: centre surélevé, bords abaissés -> île au centre, mer autour
+    # masque radial: centre plus haut, bords plus bas -> île centrale, mer autour
     dx = nx - 0.5
     dy = ny - 0.5
     r = math.hypot(dx, dy) / 0.7071
@@ -129,16 +130,26 @@ class WorldMap(Scene):
 
         self.land_over = LandOverrides(WORLD_W, WORLD_H)
 
+        # Flash visuel après embarquement/débarquement
         self._mode_flash_timer = 0.0
         self._mode_flash_kind = None  # "boat"|"land"|None
 
+        # Cooldown pour éviter la réouverture immédiate d'un château
+        self._castle_cooldown = 0.0
+
         self._load_world()
+
+    # --- appelé quand une scène enfant (CastleView) se ferme ---
+    def on_child_popped(self, child):
+        if isinstance(child, CastleView):
+            self.selected = None
+            self._castle_cooldown = 0.45  # ~1/2 seconde pour éviter re-pop immédiat
 
     # ---------- terrain helpers ----------
     def _height(self, x, y):
         nx, ny = x / WORLD_W, y / WORLD_H
         v = _fbm(nx, ny, SEED)
-        v *= 0.75 + 0.25 * _island_mask(nx, ny)  # île centrale, mer autour
+        v *= 0.75 + 0.25 * _island_mask(nx, ny)  # île au centre
         light = 0.08 * (1 - (nx + (1 - ny)) / 2)
         return max(0.0, min(1.0, v + light))
 
@@ -146,7 +157,7 @@ class WorldMap(Scene):
         if self.land_over.is_land_here(x, y):
             return False
         v = self._height(x, y)
-        return v < 0.40
+        return v < 0.40  # eau (deep+shallow)
 
     def is_land(self, x, y):
         return not self.is_water(x, y)
@@ -154,8 +165,8 @@ class WorldMap(Scene):
     def on_enter(self):
         self._render_background()
         self._generate_islets_and_ports()
-        self._reposition_water_castles()  # après overrides garantis
-        # Spawn roi sur terre
+        self._reposition_water_castles()
+        # Assurer un spawn du roi sur la terre
         if self.is_water(self.king.pos.x, self.king.pos.y):
             nx, ny = self._nearest_land(self.king.pos.x, self.king.pos.y, max_r=600)
             self.king.pos.update(nx, ny)
@@ -173,6 +184,7 @@ class WorldMap(Scene):
         }
         if world_path.exists():
             data = json.loads(world_path.read_text(encoding="utf-8"))
+
         k = data["king"]
         self.king = King(k["x"], k["y"], speed=k.get("speed", 200))
         self.castles = [Castle(c["name"], c["x"], c["y"], c.get("owner","enemy"))
@@ -187,11 +199,12 @@ class WorldMap(Scene):
             for x in range(low_w):
                 nx = x / low_w
                 v = _fbm(nx, ny, SEED)
-                v *= 0.75 + 0.25 * _island_mask(nx, ny)
+                v *= 0.75 + 0.25 * _island_mask(nx, ny)  # île centrale
                 light = 0.08 * (1 - (nx + (1 - ny)) / 2)
                 v = max(0.0, min(1.0, v + light))
                 low.set_at((x, y), _classify(v))
         bg = pygame.transform.smoothscale(low, (WORLD_W, WORLD_H))
+        # bordure douce
         overlay = pygame.Surface((WORLD_W, WORLD_H), pygame.SRCALPHA)
         for c in range(6):
             alpha = 18 - c*3
@@ -208,6 +221,7 @@ class WorldMap(Scene):
             jitter = random.uniform(-0.35, 0.35)
             rad = r_base * (0.8 + 0.5 * math.sin(ang*2 + random.random()*0.6) + jitter)
             pts.append((cx + math.cos(ang)*rad, cy + math.sin(ang)*rad))
+        # lissage simple
         smooth = []
         for i in range(len(pts)):
             a = pygame.Vector2(pts[i-1]); b = pygame.Vector2(pts[i]); c = pygame.Vector2(pts[(i+1)%len(pts)])
@@ -231,6 +245,7 @@ class WorldMap(Scene):
         random.seed(SEED + 2025)
         self.ports = []
 
+        # -------- îlots (loin des bords & du continent) --------
         margin = 180
         wanted_islets = 6
         min_islet_spacing = 150
@@ -244,17 +259,13 @@ class WorldMap(Scene):
             if not self.is_water(x, y):
                 continue
             r = random.randint(70, 120)
-
-            # éloignement des autres îlots
             if any(pygame.Vector2(x-bx, y-by).length() < (br + min_islet_spacing) for bx,by,br in blobs):
                 continue
-            # anneau d'eau autour pour éviter qu'il colle au continent
             if not self._ring_is_mostly_water(x, y, r, gap=40, step_deg=8, ratio=0.9):
                 continue
-
             blobs.append((x, y, r))
 
-        # dessiner îlots + marquer en terre forcée
+        # dessiner + override en terre
         for (cx, cy, r) in blobs:
             poly = self._make_blob_islet(cx, cy, r, spikes=random.randint(12,18))
             pygame.draw.polygon(self._bg, COLOR_SAND, [(int(px),int(py)) for px,py in poly])
@@ -286,7 +297,7 @@ class WorldMap(Scene):
                 continue
             self.ports.append(Port(f"Port-{len(self.ports)+1}", *p))
 
-        # 1 port par îlot, placé sur la côte de l’îlot
+        # 1 port par îlot (sur la côte de l’îlot)
         for i, (cx,cy,r) in enumerate(blobs, start=1):
             placed = False
             for ang in range(0, 360, 10):
@@ -298,7 +309,7 @@ class WorldMap(Scene):
                         placed = True
                         break
             if not placed:
-                # secours: un point à l'est de l’îlot (mais on garde UN seul port)
+                # fallback unique (mais on garde UN seul port)
                 px = int(cx + r*0.8); py = int(cy)
                 self.ports.append(Port(f"Îlot-Port-{i}", px, py))
 
@@ -316,14 +327,13 @@ class WorldMap(Scene):
         for c in self.castles:
             if self.is_water(c.pos.x, c.pos.y):
                 nx, ny = self._nearest_land(c.pos.x, c.pos.y, max_r=800)
-                if self.is_water(nx, ny):
-                    # secours: colle le château au port le plus proche
-                    if self.ports:
-                        near = min(self.ports, key=lambda p: pygame.Vector2(p.pos - c.pos).length())
-                        nx, ny = int(near.pos.x + 24), int(near.pos.y + 24)
+                if self.is_water(nx, ny) and self.ports:
+                    # secours: proche d'un port
+                    near = min(self.ports, key=lambda p: pygame.Vector2(p.pos - c.pos).length())
+                    nx, ny = int(near.pos.x + 24), int(near.pos.y + 24)
                 c.pos.update(nx, ny)
 
-    # ------------- helpers -------------
+    # ------------- helpers caméra -------------
     def _screen_to_world(self, sx, sy):
         return (sx + self.cam.x, sy + self.cam.y)
 
@@ -374,12 +384,12 @@ class WorldMap(Scene):
                 self.king.move_to(clicked_port.pos.x, clicked_port.pos.y)
                 self._last_target = pygame.Vector2(clicked_port.pos)
             else:
+                # mouvement manuel -> on annule la sélection pour éviter repop auto
+                self.selected = None
                 if self.king.mode == "land" and self.is_land(wx, wy):
-                    self.selected = None
                     self.king.move_to(wx, wy)
                     self._last_target = pygame.Vector2(wx, wy)
                 elif self.king.mode == "boat" and self.is_water(wx, wy):
-                    self.selected = None
                     self.king.move_to(wx, wy)
                     self._last_target = pygame.Vector2(wx, wy)
 
@@ -387,6 +397,10 @@ class WorldMap(Scene):
             self.mgr.quit = True
 
     def update(self, dt: float):
+        # cooldown château
+        if self._castle_cooldown > 0:
+            self._castle_cooldown = max(0.0, self._castle_cooldown - dt)
+
         prev = self.king.pos.copy()
         self.king.update(dt)
 
@@ -398,10 +412,12 @@ class WorldMap(Scene):
 
         self._center_camera_on_king()
 
-        if self.selected and not self.king.moving and self.king.is_near(self.selected.pos.x, self.selected.pos.y, radius=20):
+        # Ouverture de château (seulement si pas en cooldown)
+        if (self.selected and self._castle_cooldown == 0.0 and
+            not self.king.moving and self.king.is_near(self.selected.pos.x, self.selected.pos.y, radius=20)):
             self.mgr.push(CastleView(self.mgr, self.selected))
 
-        # embarquement/débarquement auto sur port à l'arrivée
+        # Embarquement/débarquement auto
         if not self.king.moving:
             for p in self.ports:
                 if self.king.is_near(p.pos.x, p.pos.y, radius=20):
@@ -416,7 +432,7 @@ class WorldMap(Scene):
             if self._mode_flash_timer <= 0:
                 self._mode_flash_kind = None
 
-        # événements seulement en mode "land"
+        # événements aléatoires en mode terre uniquement
         if self.king.moving and self.king.mode == "land":
             self._event_timer += dt
             if self._event_timer >= self._event_interval:
@@ -428,6 +444,7 @@ class WorldMap(Scene):
         if self._bg:
             surface.blit(self._bg, (-int(self.cam.x), -int(self.cam.y)))
 
+        # Trace du chemin
         if self.king.moving and self.king.target is not None:
             a = self.king.pos - self.cam
             b = self.king.target - self.cam
@@ -437,6 +454,7 @@ class WorldMap(Scene):
             b = self._last_target - self.cam
             _draw_dotted_line(surface, a, b, color=(220,220,220))
 
+        # Châteaux
         for c in self.castles:
             c.draw(surface, offset=self.cam)
             if self.hovered_castle is c:
@@ -449,15 +467,17 @@ class WorldMap(Scene):
             surface.blit(f.render(c.name, True, (245,245,245)),
                          (sp.x - name_shadow.get_width()/2, sp.y + c.radius + 8))
 
+        # Ports
         for p in self.ports:
             p.draw(surface, offset=self.cam)
             if self.hovered_port is p:
                 sp = p.pos - self.cam
                 pygame.draw.circle(surface, (245,245,245), (int(sp.x), int(sp.y)), p.radius+6, 2)
 
+        # Roi
         self.king.draw(surface, offset=self.cam)
 
-        # flash “mode” au-dessus du roi
+        # Flash d’icône “mode”
         if self._mode_flash_kind:
             sp = self.king.pos - self.cam
             y = sp.y - 32
@@ -471,6 +491,7 @@ class WorldMap(Scene):
                 pygame.draw.rect(surface, (240,240,240), (sp.x-12, y-3, 10, 3), 1)
                 pygame.draw.rect(surface, (240,240,240), (sp.x+2,  y-3, 10, 3), 1)
 
+        # Vignette
         if self._vignette:
             surface.blit(self._vignette, (0,0))
 

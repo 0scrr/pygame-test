@@ -1,53 +1,51 @@
 import pygame
 
 class Scene:
-    """Base de scène : handle_event, update, draw."""
-    def __init__(self, manager):
-        self.mgr = manager
-
+    def __init__(self, mgr):
+        self.mgr = mgr
+    # Hooks optionnels
     def on_enter(self): pass
-    def on_leave(self): pass
+    def on_exit(self): pass
+    def on_child_popped(self, child): pass  # appelé quand une scène enfant se ferme
     def handle_event(self, event): pass
     def update(self, dt: float): pass
     def draw(self, surface: pygame.Surface): pass
 
-
 class SceneManager:
-    """Gestionnaire avec un petit stack (push/pop)."""
     def __init__(self):
-        self._stack: list[Scene] = []
+        self.stack: list[Scene] = []
         self.quit = False
 
+    @property
     def current(self) -> Scene | None:
-        return self._stack[-1] if self._stack else None
+        return self.stack[-1] if self.stack else None
 
     def push(self, scene: Scene):
-        self._stack.append(scene)
+        self.stack.append(scene)
         scene.on_enter()
 
     def pop(self):
-        if self._stack:
-            top = self._stack.pop()
-            top.on_leave()
-        if not self._stack:
-            self.quit = True
+        if not self.stack:
+            return
+        child = self.stack.pop()
+        child.on_exit()
+        # informer la scène du dessous
+        parent = self.current
+        if parent:
+            parent.on_child_popped(child)
 
-    def replace(self, scene: Scene):
-        self.pop()
-        if not self.quit:
-            self.push(scene)
-
+    # IMPORTANT: ne délègue qu'à la scène **courante**
     def handle_event(self, event):
-        cur = self.current()
+        cur = self.current
         if cur:
             cur.handle_event(event)
 
     def update(self, dt: float):
-        cur = self.current()
+        cur = self.current
         if cur:
             cur.update(dt)
 
     def draw(self, surface: pygame.Surface):
-        cur = self.current()
+        cur = self.current
         if cur:
             cur.draw(surface)
