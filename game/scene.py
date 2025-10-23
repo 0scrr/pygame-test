@@ -1,4 +1,5 @@
 import pygame
+from .entities import King
 
 class Scene:
     def __init__(self, mgr):
@@ -15,6 +16,7 @@ class SceneManager:
     def __init__(self):
         self.stack: list[Scene] = []
         self.quit = False
+        self.game_state = GameState()  # État global du jeu avec le roi
 
     @property
     def current(self) -> Scene | None:
@@ -49,3 +51,7 @@ class SceneManager:
         cur = self.current
         if cur:
             cur.draw(surface)
+
+class GameState:
+    def __init__(self):
+        self.king = King(400, 300)  # Position initiale par défaut

@@ -20,16 +20,24 @@ def _draw_boat_icon(surf, center):
 def _draw_boots_icon(surf, center):
     x, y = int(center.x), int(center.y)
     pygame.draw.rect(surf, (35,35,35), (x-10, y+4, 8, 6))
-    pygame.draw.rect(surf, (35,35,35), (x+2,  y+4, 8, 6))
+    pygame.draw.rect(surf, (35,35,35), (x+2, y+4, 8, 6))
     pygame.draw.rect(surf, (230,230,230), (x-10, y+1, 8, 4), 1)
-    pygame.draw.rect(surf, (230,230,230), (x+2,  y+1, 8, 4), 1)
+    pygame.draw.rect(surf, (230,230,230), (x+2, y+1, 8, 4), 1)
 
 class King:
+    """Représente le roi avec mouvement et inventaire."""
     def __init__(self, x: float, y: float, speed: float = 200.0):
         self.pos = pygame.Vector2(x, y)  # monde
         self.speed = speed
         self.target: pygame.Vector2 | None = None
         self.mode = "land"  # "land" ou "boat"
+        # Inventaire
+        self.resources = {
+            "gold": 1000,  # Or initial
+            "food": 500,   # Nourriture pour recruter/maintenir l'armée
+        }
+        self.equipment = {}  # Dict d'équipements (nom: quantité)
+        self.army = {}      # Dict de troupes (type: quantité)
 
     def move_to(self, x: float, y: float):
         self.target = pygame.Vector2(x, y)
@@ -58,7 +66,6 @@ class King:
         t = pygame.time.get_ticks() * 0.003
         pulse = 2 + int(2 * (1 + math.sin(t)))
         _draw_outline_circle(surf, screen_pos, 12 + pulse, color)
-
         if self.mode == "boat":
             _draw_boat_icon(surf, screen_pos)
         else:
@@ -71,6 +78,68 @@ class King:
                 (screen_pos.x + 8, screen_pos.y - 12),
             ]
             pygame.draw.lines(surf, (35,25,10), False, crown_pts, 3)
+
+    def add_resource(self, resource_type, amount):
+        if resource_type in self.resources:
+            self.resources[resource_type] += amount
+
+    def remove_resource(self, resource_type, amount):
+        if resource_type in self.resources and self.resources[resource_type] >= amount:
+            self.resources[resource_type] -= amount
+            return True
+        return False
+
+    def add_equipment(self, item_name):
+        if item_name in self.equipment:
+            self.equipment[item_name] += 1
+        else:
+            self.equipment[item_name] = 1
+
+    def sell_equipment(self, item_name):
+        if item_name in self.equipment and self.equipment[item_name] > 0:
+            self.equipment[item_name] -= 1
+            if self.equipment[item_name] == 0:
+                del self.equipment[item_name]
+            self.add_resource("gold", EQUIPMENTS[item_name]["price"] // 2)  # Vente à moitié prix
+            return True
+        return False
+
+    def recruit_soldier(self, soldier_type):
+        if soldier_type in self.army:
+            self.army[soldier_type] += 1
+        else:
+            self.army[soldier_type] = 1
+
+    def dismiss_soldier(self, soldier_type):
+        if soldier_type in self.army and self.army[soldier_type] > 0:
+            self.army[soldier_type] -= 1
+            if self.army[soldier_type] == 0:
+                del self.army[soldier_type]
+            soldier = SOLDIERS[soldier_type]
+            self.add_resource("gold", soldier["cost_gold"] // 2)
+            self.add_resource("food", soldier["cost_food"] // 2)
+            return True
+        return False
+
+# Constantes pour équipements et soldats
+EQUIPMENTS = {
+    "Épée": {"price": 50, "icon_func": lambda surf, center: pygame.draw.rect(surf, (200, 200, 200), (center[0]-10, center[1]-5, 20, 10))},
+    "Arc": {"price": 60, "icon_func": lambda surf, center: pygame.draw.arc(surf, (150, 100, 50), (center[0]-10, center[1]-10, 20, 20), 0, math.pi, 2)},
+    "Bouclier": {"price": 40, "icon_func": lambda surf, center: pygame.draw.circle(surf, (100, 100, 100), center, 10)},
+    "Massue": {"price": 30, "icon_func": lambda surf, center: pygame.draw.line(surf, (120, 80, 40), (center[0], center[1]-10), (center[0], center[1]+10), 4)},
+    "Lance": {"price": 70, "icon_func": lambda surf, center: pygame.draw.line(surf, (180, 180, 180), (center[0]-10, center[1]), (center[0]+10, center[1]), 3)},
+    "Couteaux": {"price": 20, "icon_func": lambda surf, center: pygame.draw.polygon(surf, (150, 150, 150), [(center[0]-5, center[1]-5), (center[0]+5, center[1]-5), (center[0], center[1]+5)])},
+    "Arbalète": {"price": 80, "icon_func": lambda surf, center: pygame.draw.rect(surf, (140, 90, 50), (center[0]-10, center[1]-5, 20, 10))},
+    "Potion de vie": {"price": 25, "icon_func": lambda surf, center: pygame.draw.circle(surf, (200, 50, 50), center, 8)},
+}
+
+SOLDIERS = {
+    "Guerrier": {"cost_gold": 100, "cost_food": 50, "icon_func": lambda surf, center: pygame.draw.rect(surf, (100, 100, 200), (center[0]-8, center[1]-8, 16, 16))},
+    "Assassin": {"cost_gold": 150, "cost_food": 40, "icon_func": lambda surf, center: pygame.draw.polygon(surf, (50, 50, 50), [(center[0], center[1]-8), (center[0]-8, center[1]+8), (center[0]+8, center[1]+8)])},
+    "Archer": {"cost_gold": 120, "cost_food": 30, "icon_func": lambda surf, center: pygame.draw.arc(surf, (150, 100, 50), (center[0]-8, center[1]-8, 16, 16), 0, math.pi, 2)},
+    "Cavalier": {"cost_gold": 200, "cost_food": 80, "icon_func": lambda surf, center: pygame.draw.rect(surf, (200, 150, 100), (center[0]-10, center[1]-5, 20, 10))},
+    "Soigneur": {"cost_gold": 180, "cost_food": 60, "icon_func": lambda surf, center: pygame.draw.circle(surf, (50, 200, 50), center, 8)},
+}
 
 class Castle:
     def __init__(self, name: str, x: float, y: float, owner: str = "enemy", radius: int = 18):
